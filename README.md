@@ -1,3 +1,5 @@
+> **⚠️ Warning:** This branch is only for building the project. It is not intended for production use.
+
 <div align="center">
 
   # Whisky 🥃
