@@ -3,6 +3,7 @@ name: Release
 on:
   release:
     types: [published]
+  workflow_dispatch:
 
 env:
   XCODE_VERSION: 'latest-stable'
@@ -37,15 +38,19 @@ jobs:
             ${{ runner.os }}-spm-release-
             ${{ runner.os }}-spm-
 
-      - name: Extract Version from Tag
+      - name: Extract Version
         id: version
         run: |
-          TAG="${{ github.event.release.tag_name }}"
-          # Strip leading 'v' if present (e.g., v2.3.5 -> 2.3.5)
-          VERSION="${TAG#v}"
+          if [ "${{ github.event_name }}" = "release" ]; then
+            TAG="${{ github.event.release.tag_name }}"
+            VERSION="${TAG#v}"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          else
+            # Manual trigger: read version from Xcode project
+            VERSION=$(grep -m1 'MARKETING_VERSION' Whisky.xcodeproj/project.pbxproj | tr -d ' ;' | cut -d= -f2)
+          fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "Building version: $VERSION (tag: $TAG)"
+          echo "Building version: $VERSION"
 
       - name: Build Release Archive
         run: |
@@ -85,7 +90,14 @@ jobs:
           echo "zip_path=$ZIP_PATH" >> "$GITHUB_ENV"
           echo "Zip archive created: $(du -sh "$ZIP_PATH" | cut -f1)"
 
+      - name: Upload Workflow Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}.zip
+          path: ${{ env.zip_path }}
+
       - name: Upload Release Asset
+        if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
