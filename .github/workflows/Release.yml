@@ -4,24 +4,91 @@ on:
   release:
     types: [published]
 
-jobs:
-  release:
-    name: Release
-    runs-on: ubuntu-latest
-    steps:
-      # Homebrew Cask update is disabled for this fork
-      # The `brew install --cask whisky` command installs the original Whisky project
-      # This fork does not control the Homebrew cask
-      #
-      # - name: Update Homebrew Cask
-      #   uses: macauley/action-homebrew-bump-cask@v1
-      #   with:
-      #     token: ${{secrets.BREW_TOKEN}}
-      #     org: frankea
-      #     cask: whisky
+env:
+  XCODE_VERSION: 'latest-stable'
+  SCHEME: Whisky
+  APP_NAME: Whisky
 
-      - name: Release Info
+jobs:
+  build:
+    name: Build & Upload Release
+    runs-on: macos-15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: ${{ env.XCODE_VERSION }}
+
+      - name: Cache SPM Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Developer/Xcode/DerivedData/*/SourcePackages
+            .build
+            WhiskyKit/.build
+          key: ${{ runner.os }}-spm-release-${{ hashFiles('**/Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-spm-release-
+            ${{ runner.os }}-spm-
+
+      - name: Extract Version from Tag
+        id: version
         run: |
-          echo "Release ${{ github.event.release.tag_name }} published"
-          echo "This fork is distributed via GitHub Releases only"
-          echo "Download: https://github.com/frankea/Whisky/releases"
+          TAG="${{ github.event.release.tag_name }}"
+          # Strip leading 'v' if present (e.g., v2.3.5 -> 2.3.5)
+          VERSION="${TAG#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Building version: $VERSION (tag: $TAG)"
+
+      - name: Build Release Archive
+        run: |
+          xcodebuild -project Whisky.xcodeproj \
+            -scheme "${{ env.SCHEME }}" \
+            -configuration Release \
+            -archivePath "${{ runner.temp }}/${{ env.APP_NAME }}.xcarchive" \
+            archive \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            MARKETING_VERSION="${{ steps.version.outputs.version }}"
+
+      - name: Export App from Archive
+        run: |
+          # The .app bundle lives inside the xcarchive
+          APP_PATH="${{ runner.temp }}/${{ env.APP_NAME }}.xcarchive/Products/Applications/${{ env.APP_NAME }}.app"
+
+          if [ ! -d "$APP_PATH" ]; then
+            echo "Error: $APP_PATH not found"
+            echo "Archive contents:"
+            find "${{ runner.temp }}/${{ env.APP_NAME }}.xcarchive" -maxdepth 4 -type d
+            exit 1
+          fi
+
+          echo "App bundle found at: $APP_PATH"
+          echo "App bundle size: $(du -sh "$APP_PATH" | cut -f1)"
+
+      - name: Create Zip Archive
+        run: |
+          APP_PATH="${{ runner.temp }}/${{ env.APP_NAME }}.xcarchive/Products/Applications/${{ env.APP_NAME }}.app"
+          ZIP_PATH="${{ runner.temp }}/${{ env.APP_NAME }}.zip"
+
+          # Create a zip from the .app bundle using ditto (preserves macOS metadata)
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ZIP_PATH"
+
+          echo "zip_path=$ZIP_PATH" >> "$GITHUB_ENV"
+          echo "Zip archive created: $(du -sh "$ZIP_PATH" | cut -f1)"
+
+      - name: Upload Release Asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ steps.version.outputs.tag }}" \
+            "${{ env.zip_path }}#${{ env.APP_NAME }}.zip" \
+            --clobber
